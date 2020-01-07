@@ -1,0 +1,517 @@
+;
+; Anorectic Trunk by freQvibez / Offence!
+; last change: 2019-12-16
+;
+; player based upon the code
+; of Laxity's "Repeat Me"
+;
+; so most of the credits should go to him!
+;
+; player limitations galore:
+;   - release must be short, because
+;     'off' sets note value to $00 (c7)
+;   - arpeggio only for voice 2
+;   - arpeggio can only go up to the next
+;     octave
+;   - no hard restart
+;
+
+; -------------------------- definitions
+
+speed   = #$07
+
+zp0     = $02
+zp1     = $fb
+zp2     = $fc
+
+seqptr  = zp0+0       ; player data for each voice
+cnt     = zp0+3
+value   = zp0+6
+note    = zp0+9
+duration= zp0+12
+
+arppos  = zp0+15      ; -------
+arpidx  = zp0+16      ; voice 2
+arpadd  = zp0+17      ;  only
+arpdel  = zp0+18      ; -------
+
+; --------------------------------- init
+
+        *= $1000
+
+init    lda #$00
+
+        ldx #$18
+        sta $d400, x
+-       sta zp0, x    ; init zp0 (15 bytes)
+        dex
+        bne -
+
+        sta $d409     ; pulse width voice 2 lo
+        sta $d415     ; filter cut-off lo
+
+        lda #$03
+        sta $d40a     ; pulse width voice 2 hi
+
+        lda #$61
+        sta $d416     ; filter cut-off lo
+        sta $d417     ; filter resonance / control
+
+        lda #$1f
+        sta $d418     ; filter mode / SID volume
+
+        rts
+
+; ------------------------------- player
+
+play    dec arpdel    ; handle arpeggio speed
+        bpl noarp
+
+        lda arpdelay  ; reset arp counter
+        sta arpdel
+
+        lda arppos    ; update position within current arp
+        tay
+        iny
+        cpy arplen    ; arps have a fixed length
+        bne +
+        ldy #$00
++       sty arppos
+        clc
+        adc arpidx    ; current active arp
+        tax
+        lda arptbl, x
+        sta arpadd
+
+noarp   dec duration
+        bpl +         ; reset duration?
+        lda speed     ; yes
+        sta duration  ; set tune duration (frame delay)
+
++       ldx #$02      ; number of voices
+
+nexttrk lda duration
+        bne updsnd
+        dec cnt, x
+        bpl updsnd
+
+        ldy seqptr, x
+
+-       lda seq0, y
+        bpl isnote
+
+        cmp #$ff      ; #$ff: end of voice note sequence
+        beq wrap
+
+        and #$7f      ; >= #$80: duration/arp
+
+        iny           ; increase sequence position
+
+        clc
+        cmp #(arp-dur)
+        bcs setarp
+
+        sta value, x   ; command: duration
+        bcc -          ; gne - / jmp -
+
+setarp  sec            ; command: arpeggio
+        sbc #(arp-dur)
+        sta arpidx     ; set current arp
+                       ; TODO: reset arp data
+
+        jmp -          ; proceed with next note after setting arp
+
+wrap    ldy offs, x    ; command: wrap (reset sequence offset for voice)
+        jmp -
+
+isnote  sta note, x
+
+        lda value, x
+        sta cnt, x
+        iny
+        tya
+        sta seqptr, x
+
+updsnd  ldy wave, x
+
+        lda cnt, x
+        beq gateoff
+        lda note, x
+        beq gateoff
+        iny           ; GATE on
+
+gateoff tya
+        ldy rofl, x
+        sta $d404, y  ; SID AR / Release
+        lda note, x
+
+        cpx #$01      ; arp (voice 2)
+        bne noarp2
+
+        tay
+
+        and #$7f
+        beq noarp2
+
+        and #$0f
+
+        clc
+        adc arpadd
+
+        cmp #$0c      ; >= #$0c, set carry
+        bcc +         ; nope
+
+        tya
+        clc
+        sbc #$1c      ; FIXME: this allows for only 1 octave
+        tay
+
++       tya
+        adc arpadd    ; use carry from sbc!
+
+noarp2  pha
+        and #$0f
+
+        tay
+        lda frqlo, y
+        sta zp1
+        lda frqhi, y
+        sta zp2
+        pla
+
+        lsr
+        lsr
+
+        cpx #$01      ; no alternating octaves for voice 2
+        beq +
+
+        clc
+        adc duration  ; alternating octaves
+
++       lsr
+        lsr
+        tay
+        dey
+        dey
+        bmi +
+
+-       lsr zp2       ; shift
+        ror zp1
+        dey
+        bpl -
+
++       ldy rofl, x   ; nooct
+        lda zp1
+        sta $d400, y  ; freq lo
+        lda zp2
+        sta $d401, y  ; freq hi
+        lda ad, x
+        sta $d405, y  ; AD
+        lda sr, x
+        sta $d406, y  ; SR
+
+        dex
+        bmi +
+
+        jmp nexttrk
+
++       rts
+
+; ---------------------------- voice data
+
+; sid register FREQ LO/HI 1-3 offsets
+rofl    .byte $00, $07, $0e
+
+; sequence offsets
+offs    .byte seq1-seq0, seq2-seq0, seq3-seq0
+
+; waveforms per voice
+wave    .byte $20, $40, $10
+
+; attack/deckay per voice
+ad      .byte $0a, $08, $58
+
+; sustain/release per voice
+sr      .byte $09, $05, $55
+
+; ---------------------------- sequences
+
+; == 00: off
+; >= 80: set duration
+; == c0: arpeggio (voice 2 only)
+; == ff: loop from beginning
+
+seq0    .byte end
+
+; voice 1 - bass
+
+seq1
+        .byte dur+3
+
+        .byte c2
+        .byte c2
+        .byte e3
+        .byte e3
+        .byte g2
+        .byte g2
+        .byte d3
+        .byte d3
+
+        .byte f2
+        .byte gs2
+        .byte c3
+        .byte c3
+        .byte bb2
+        .byte eb2
+        .byte g2
+        .byte e2 ; d2
+
+        .byte end
+
+; voice 2 - "arp"
+
+seq2
+        .byte dur+1
+
+        .byte off, arp+03, a4
+        .byte off,         a4
+        .byte off, arp+18, e4
+        .byte off,         e4
+        .byte off, arp+12, g4
+        .byte off,         g4
+        .byte off, arp+09, f4
+        .byte off,         f4
+
+        .byte off, arp+03, a4
+        .byte off, arp+06, f4
+        .byte off,         c4
+        .byte off,         c4
+        .byte off, arp+00, e4
+        .byte off, arp+09, eb4
+        .byte off, arp+15, b3
+        .byte off, arp+03, g4
+
+        .byte end
+
+; voice 3 - lead
+
+seq3
+        .byte dur+1
+
+        .byte e6
+        .byte a5
+        .byte g5
+        .byte off
+
+        .byte off
+        .byte d6
+        .byte c6
+        .byte b5
+
+        .byte off
+        .byte a6
+        .byte g6
+        .byte off
+
+        .byte off
+        .byte f6
+        .byte d6
+        .byte e6
+
+        .byte f6
+        .byte c6
+        .byte off
+        .byte ab5
+
+        .byte off
+        .byte bb5
+        .byte g5
+
+        .byte dur+15
+        .byte off
+
+        .byte dur+1
+        .byte f6
+
+        .byte end
+
+; arpeggios
+
+        ;.align $0100
+
+arpdelay= #$01
+arplen  = #$03
+
+arptbl
+        .byte  0,  3,  6
+        .byte  0,  3,  7
+        .byte  0,  4,  7
+        .byte  0,  4,  9
+        .byte  0,  5,  7
+        .byte  0,  5,  8
+        .byte  0,  5, 10
+
+; note frequencies
+
+frqhi   ; note freqs high
+        .byte $45, $49, $4e
+        .byte $52, $57, $5c
+        .byte $62, $68, $6e
+        .byte $75, $7c, $83
+
+frqlo   ; note freqs low
+        .byte $a0, $b7, $20
+        .byte $bc, $ac, $e4
+        .byte $70, $4c, $84
+        .byte $18, $10, $70
+
+; --------------- note values definitions
+
+c0  = $70
+cs0 = $71
+db0 = $71
+d0  = $72
+ds0 = $73
+eb0 = $73
+e0  = $74
+f0  = $75
+fs0 = $76
+gb0 = $76
+g0  = $77
+gs0 = $78
+ab0 = $78
+a0  = $79
+as0 = $7a
+bb0 = $7a
+b0  = $7b
+
+c1  = $60
+cs1 = $61
+db1 = $61
+d1  = $62
+ds1 = $63
+eb1 = $63
+e1  = $64
+f1  = $65
+fs1 = $66
+gb1 = $66
+g1  = $67
+gs1 = $68
+ab1 = $68
+a1  = $69
+as1 = $6a
+bb1 = $6a
+b1  = $6b
+
+c2  = $50
+cs2 = $51
+db2 = $51
+d2  = $52
+ds2 = $53
+eb2 = $53
+e2  = $54
+f2  = $55
+fs2 = $56
+gb2 = $56
+g2  = $57
+gs2 = $58
+ab2 = $58
+a2  = $59
+as2 = $5a
+bb2 = $5a
+b2  = $5b
+
+c3  = $40
+cs3 = $41
+db3 = $41
+d3  = $42
+ds3 = $43
+eb3 = $43
+e3  = $44
+f3  = $45
+fs3 = $46
+gb3 = $46
+g3  = $47
+gs3 = $48
+ab3 = $48
+a3  = $49
+as3 = $4a
+bb3 = $4a
+b3  = $4b
+
+c4  = $30
+cs4 = $31
+db4 = $31
+d4  = $32
+ds4 = $33
+eb4 = $33
+e4  = $34
+f4  = $35
+fs4 = $36
+gb4 = $36
+g4  = $37
+gs4 = $38
+ab4 = $38
+a4  = $39
+as4 = $3a
+bb4 = $3a
+b4  = $3b
+
+c5  = $20
+cs5 = $21
+db5 = $21
+d5  = $22
+ds5 = $23
+eb5 = $23
+e5  = $24
+f5  = $25
+fs5 = $26
+gb5 = $26
+g5  = $27
+gs5 = $28
+ab5 = $28
+a5  = $29
+as5 = $2a
+bb5 = $2a
+b5  = $2b
+
+c6  = $10
+cs6 = $11
+db6 = $11
+d6  = $12
+ds6 = $13
+eb6 = $13
+e6  = $14
+f6  = $15
+fs6 = $16
+gb6 = $16
+g6  = $17
+gs6 = $18
+ab6 = $18
+a6  = $19
+as6 = $1a
+bb6 = $1a
+b6  = $1b
+
+c7  = $00
+cs7 = $01
+db7 = $01
+d7  = $02
+ds7 = $03
+eb7 = $03
+e7  = $04
+f7  = $05
+fs7 = $06
+gb7 = $06
+g7  = $07
+gs7 = $08
+ab7 = $08
+a7  = $09
+as7 = $0a
+bb7 = $0a
+b7  = $0b
+
+off = $00
+dur = $80
+arp = $c0
+end = $ff
